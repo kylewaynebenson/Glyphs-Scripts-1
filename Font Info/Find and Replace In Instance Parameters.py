@@ -7,7 +7,7 @@ Finds and Replace in Custom Parameters of selected instances of the current font
 
 import vanilla
 import objc
-from Foundation import NSString
+from Foundation import NSString, NSMutableArray
 from GlyphsApp import Glyphs, GSProjectDocument
 from mekkablue import mekkaObject
 
@@ -94,7 +94,15 @@ class FindAndReplaceInInstanceParameters(mekkaObject):
 	def FindAndReplaceInInstanceParametersMain(self, sender):
 		try:
 			instances = self.getInstances()
-			parameterName = self.w.availableParameters.getItems()[self.w.availableParameters.get()]
+			selectedIndex = self.w.availableParameters.get()
+			parameterItems = self.w.availableParameters.getItems()
+			
+			# Ensure we have valid items and selection
+			if selectedIndex < 0 or selectedIndex >= len(parameterItems):
+				print("Error: No parameter selected")
+				return
+				
+			parameterName = str(parameterItems[selectedIndex])  # Convert to string to ensure proper type
 			findText = self.w.find.get()
 			replaceText = self.w.replace.get()
 
@@ -102,8 +110,50 @@ class FindAndReplaceInInstanceParameters(mekkaObject):
 				for thisInstance in instances:  # loop through instances
 					parameter = thisInstance.customParameters[parameterName]
 					if parameter is not None:
-						print(type(parameter))
-						if isinstance(parameter, (bool, objc._pythonify.OC_PythonInt)):
+						
+						# Special handling for Axis Location and similar structured parameters
+						if parameterName in ("Axis Location", "Axes Coordinates") and hasattr(parameter, "__iter__"):
+							if findText and replaceText:
+								# Work with structured axis data (array of dictionaries)
+								parameterList = NSMutableArray.arrayWithArray_(parameter)
+								changesMade = False
+								
+								# Remove any stray non-dict items that may have been added by accident
+								itemsToRemove = []
+								for i, item in enumerate(parameterList):
+									if not (isinstance(item, dict) or str(type(item)).find('Dictionary') != -1):
+										itemsToRemove.append(i)
+								
+								# Remove in reverse order to maintain indices
+								for i in reversed(itemsToRemove):
+									parameterList.removeObjectAtIndex_(i)
+									changesMade = True
+								
+								# Now search and replace within the Location values
+								for item in parameterList:
+									if isinstance(item, dict) or str(type(item)).find('Dictionary') != -1:
+										if 'Location' in item:
+											locationValue = item['Location']
+											locationStr = str(locationValue)
+											if findText in locationStr:
+												try:
+													# Try to replace as number
+													if isinstance(locationValue, int):
+														newLocation = int(replaceText)
+													else:
+														newLocation = float(replaceText)
+													item['Location'] = newLocation
+													changesMade = True
+													print(f"{thisInstance.name}: replaced Location {locationValue} → {newLocation} in {parameterName}")
+												except ValueError:
+													print(f"Warning: Could not convert '{replaceText}' to number for Location value")
+								
+								if changesMade:
+									thisInstance.customParameters[parameterName] = parameterList
+							continue  # Skip the regular string/array handling below
+						
+						# Check if it's a boolean or integer type (compatible with different PyObjC versions)
+						if isinstance(parameter, bool) or (isinstance(parameter, int) and not isinstance(parameter, bool)):
 							onOff = False
 							if replaceText.lower() in ("1", "yes", "on", "an", "ein", "ja", "true", "wahr"):
 								onOff = True
@@ -113,27 +163,35 @@ class FindAndReplaceInInstanceParameters(mekkaObject):
 
 						elif findText:
 							if isinstance(parameter, (objc.pyobjc_unicode, NSString, str)):
-								thisInstance.customParameters[parameterName] = parameter.replace(findText, replaceText)
-							elif hasattr(parameter, "__add__") and hasattr(parameter, "__delitem__"):
+								newValue = parameter.replace(findText, replaceText)
+								thisInstance.customParameters[parameterName] = newValue
+								print("%s: replaced in %s" % (thisInstance.name, parameterName))
+							elif hasattr(parameter, "__iter__") and not isinstance(parameter, str):
+								# For array-like parameters, use NSMutableArray to maintain compatibility
+								parameterList = NSMutableArray.arrayWithArray_(parameter)
 								findList = findText.splitlines()
 								replaceList = replaceText.splitlines()
 								for findItem in findList:
-									while findItem in parameter:
-										parameter.remove(findItem)
+									while findItem in parameterList:
+										parameterList.removeObject_(findItem)
 								for replaceItem in replaceList:
-									parameter.append(replaceItem)
-								thisInstance.customParameters[parameterName] = parameter
-							print("%s: replaced in %s" % (thisInstance.name, parameterName))
+									parameterList.addObject_(replaceItem)
+								thisInstance.customParameters[parameterName] = parameterList
+								print("%s: replaced in %s" % (thisInstance.name, parameterName))
 
 						elif replaceText:
 							if isinstance(parameter, (objc.pyobjc_unicode, NSString, str)):
-								thisInstance.customParameters[parameterName] += replaceText
-							elif hasattr(parameter, "__add__"):
+								newValue = parameter + replaceText
+								thisInstance.customParameters[parameterName] = newValue
+								print("%s: appended to %s" % (thisInstance.name, parameterName))
+							elif hasattr(parameter, "__iter__") and not isinstance(parameter, str):
+								# For array-like parameters, use NSMutableArray to maintain compatibility
+								parameterList = NSMutableArray.arrayWithArray_(parameter)
 								replaceList = replaceText.splitlines()
 								for replaceItem in replaceList:
-									parameter.append(replaceItem)
-								thisInstance.customParameters[parameterName] = parameter
-							print("%s: appended to %s" % (thisInstance.name, parameterName))
+									parameterList.addObject_(replaceItem)
+								thisInstance.customParameters[parameterName] = parameterList
+								print("%s: appended to %s" % (thisInstance.name, parameterName))
 
 			self.SavePreferences()
 
